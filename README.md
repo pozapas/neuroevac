@@ -58,12 +58,6 @@ eeg_dashboard/
 pip install -r requirements.txt
 ```
 
-Optional (for AI Insights LLM features):
-```
-pip install openai       # for OpenRouter cloud models
-pip install ollama       # for local Ollama models
-```
-
 ## Installation and Usage
 
 ```bash
