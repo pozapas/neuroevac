@@ -1,10 +1,14 @@
-# EEG Analysis Dashboard
+# NeuroEvac
 
-A research-grade, interactive Streamlit application for comprehensive EEG dataset analysis. Designed for neuroscientists and researchers needing a reproducible, multi-modal analysis pipeline that integrates classical signal processing, machine learning, and large language models in a single interface.
+A research-grade Streamlit dashboard for multi-modal EEG analysis, purpose-built for studying neurophysiological responses in evacuation scenarios. NeuroEvac covers the full analysis pipeline — from raw signal ingestion and preprocessing to spectral analysis, topographic mapping, ML/DL anomaly detection, UMAP epoch clustering, and AI-generated neurophysiological reports via Ollama or OpenRouter.
+
+## Research Context
+
+This dashboard was developed in the context of a study on **human neurophysiological responses during evacuation scenarios**. EEG recordings were collected from participants exposed to simulated emergency evacuation conditions to examine cognitive load, stress arousal, and attentional dynamics under time pressure. The analysis pipeline supports the full workflow from raw signal ingestion to anomaly-flagged epoch review and AI-generated neurophysiological summaries — enabling reproducible analysis of high-motion, high-noise EEG data collected in ecologically valid settings.
 
 ## Overview
 
-The dashboard ingests raw EEG recordings (OpenBCI CSV/TXT, BrainFlow CSV) and optionally paired participant survey files (XLSX). All processing is handled on-device with no data leaving the local environment by default. An optional LLM summary feature can connect to Ollama (local) or OpenRouter (cloud).
+NeuroEvac ingests raw EEG recordings (OpenBCI CSV/TXT, BrainFlow CSV) alongside optional participant survey files (XLSX). All signal processing runs on-device; no data leaves the local environment by default. An optional LLM-based reporting feature can connect to a local Ollama instance or to cloud models via OpenRouter using a personal API key.
 
 ## Features
 
