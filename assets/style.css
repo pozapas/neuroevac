@@ -1,0 +1,151 @@
+/* ─── EEG Dashboard Custom Styles ─── */
+
+/* ═══ Sidebar ═══ */
+
+/* Dark gradient background */
+[data-testid="stSidebar"]>div:first-child {
+    background: linear-gradient(180deg, #0d1117 0%, #161b22 100%);
+}
+
+
+
+/* Bold & styled navigation links */
+[data-testid="stSidebarNav"] a {
+    font-weight: 700 !important;
+    font-size: 0.92rem !important;
+    letter-spacing: 0.01em;
+    color: #c9d1d9 !important;
+    padding: 0.45rem 1rem !important;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+}
+
+[data-testid="stSidebarNav"] a:hover {
+    background: rgba(88, 166, 255, 0.08) !important;
+    color: #58a6ff !important;
+}
+
+/* Active page highlight */
+[data-testid="stSidebarNav"] a[aria-current="page"] {
+    background: rgba(88, 166, 255, 0.12) !important;
+    color: #58a6ff !important;
+    border-left: 3px solid #58a6ff;
+}
+
+/* Nav link text (span inside the link) */
+[data-testid="stSidebarNav"] span {
+    font-weight: 700 !important;
+}
+
+/* Sidebar headers */
+[data-testid="stSidebar"] h1,
+[data-testid="stSidebar"] h2,
+[data-testid="stSidebar"] h3 {
+    color: #58a6ff;
+}
+
+/* Sidebar divider */
+[data-testid="stSidebar"] hr {
+    border-color: #21262d;
+    margin: 0.6rem 0;
+}
+
+/* ═══ Metric Cards ═══ */
+[data-testid="stMetric"] {
+    background: linear-gradient(135deg, #161b22 0%, #1c2333 100%);
+    border: 1px solid #30363d;
+    border-radius: 12px;
+    padding: 16px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+[data-testid="stMetricLabel"] {
+    color: #8b949e !important;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+[data-testid="stMetricValue"] {
+    color: #f0f6fc !important;
+    font-weight: 700;
+}
+
+/* ═══ Expanders ═══ */
+details {
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    margin-bottom: 0.75rem;
+}
+
+details summary {
+    font-weight: 600;
+    color: #c9d1d9;
+}
+
+/* ═══ Plotly Charts ═══ */
+.stPlotlyChart {
+    border: 1px solid #30363d;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+/* ═══ Tabs ═══ */
+.stTabs [data-baseweb="tab-list"] {
+    gap: 4px;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px 8px 0 0;
+    padding: 8px 20px;
+    font-weight: 600;
+}
+
+/* ═══ Dataframes ═══ */
+.stDataFrame {
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+/* ═══ Download Button ═══ */
+.stDownloadButton>button {
+    background: linear-gradient(135deg, #238636 0%, #2ea043 100%);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-weight: 600;
+    padding: 0.5rem 1.5rem;
+    transition: all 0.2s ease;
+}
+
+.stDownloadButton>button:hover {
+    box-shadow: 0 4px 12px rgba(46, 160, 67, 0.4);
+    transform: translateY(-1px);
+}
+
+/* ═══ DL Dependency Warning Banner ═══ */
+.dep-warning {
+    background: linear-gradient(135deg, #2d1b00 0%, #3d2200 100%);
+    border: 1px solid #f0883e;
+    border-radius: 10px;
+    padding: 16px;
+    margin: 12px 0;
+    color: #f0883e;
+}
+
+/* ═══ Animations ═══ */
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.main .block-container {
+    animation: fadeIn 0.3s ease-out;
+}

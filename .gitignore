@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+.env
+
+# Streamlit
+.streamlit/secrets.toml
+
+# Data files — do not commit raw EEG or survey data
+*.csv
+*.txt
+*.xlsx
+*.xls
+*.edf
+*.bdf
+*.fif
+*.set
+*.cnt
+*.vhdr
+*.vmrk
+*.eeg
+
+# MNE / cache
+*.fif
+mne_data/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Logs
+*.log
+
+# Disabled pages
+*.disabled
