@@ -19,8 +19,6 @@ env/
 .streamlit/secrets.toml
 
 # Data files — do not commit raw EEG or survey data
-*.csv
-*.txt
 *.xlsx
 *.xls
 *.edf

@@ -1,0 +1,5 @@
+libhdf5-dev
+libhdf5-serial-dev
+libopenblas-dev
+liblapack-dev
+gfortran
