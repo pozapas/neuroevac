@@ -116,7 +116,7 @@ api_key = None
 
 with col2:
     if provider == "Local (Ollama)":
-        model_name = st.text_input("Model Name", value="ollama run gemini-3-flash-preview", help="e.g., llama3, mistral, gemma")
+        model_name = st.text_input("Model Name", value="gpt-oss:120b-cloud", help="e.g., llama3, mistral, gemma")
     elif provider == "Cloud (OpenRouter)":
         model_name = st.text_input("Model Name", value="google/gemini-3-flash-preview", help="e.g., openai/gpt-4o, anthropic/claude-3-opus")
 
