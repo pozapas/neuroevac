@@ -107,12 +107,6 @@ Core scientific stack:
 - [UMAP-learn](https://umap-learn.readthedocs.io) + [HDBSCAN](https://hdbscan.readthedocs.io) — Epoch clustering
 - [SciPy](https://scipy.org) — Spectral estimation
 
-## Citation
-
-If you use this dashboard in published research, please cite or acknowledge:
-
-> Rafe, A. (2025). *EEG Analysis Dashboard: An interactive platform for multi-modal EEG analysis*. Texas State University.
-
 ## License
 
 MIT License. See `LICENSE` for details.
