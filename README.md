@@ -62,7 +62,7 @@ pip install -r requirements.txt
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/eeg-dashboard.git
+git clone https://github.com/pozapas/neuroevac.git
 cd eeg-dashboard
 
 # Install dependencies
