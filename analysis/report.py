@@ -110,6 +110,8 @@ def generate_html_report(
     band_power_table: pd.DataFrame | None = None,
     anomaly_summary: dict | None = None,
     plotly_divs: list[tuple[str, str]] | None = None,
+    trigger_info: dict | None = None,
+    trigger_stats: dict | None = None,
 ) -> str:
     """Generate a comprehensive HTML report with embedded interactive Plotly charts."""
     sections = []
@@ -180,6 +182,76 @@ def generate_html_report(
             )
         anom_html += '</div>'
         sections.append(f"<h2>Anomaly Detection Results</h2>{anom_html}")
+
+    # ── Trigger Analysis ───────────────────────────────────────────────
+    if trigger_info is not None:
+        t_s = trigger_info["trigger_time_s"]
+        grp = trigger_info.get("group", "Unknown")
+        icon = "&#128266;" if grp == "Auditory" else "&#128065;"
+        t_min = int(t_s // 60)
+        t_sec = t_s % 60
+
+        trig_html = (
+            f'<div class="metrics-grid">'
+            f'<div class="metric"><div class="metric-value">{icon} {grp}</div>'
+            f'<div class="metric-label">Trigger Type</div></div>'
+            f'<div class="metric"><div class="metric-value">{t_min}:{t_sec:04.1f}</div>'
+            f'<div class="metric-label">Trigger Time</div></div>'
+            f'<div class="metric"><div class="metric-value">{t_s:.1f}s</div>'
+            f'<div class="metric-label">Time (seconds)</div></div>'
+            f'<div class="metric"><div class="metric-value">'
+            f'{trigger_info["participant"]}</div>'
+            f'<div class="metric-label">Participant</div></div>'
+            f'</div>'
+        )
+        sections.append(f"<h2>VR Experiment Trigger Analysis</h2>{trig_html}")
+
+        if trigger_stats:
+            # Pre/Post Comparison Table
+            pre_post_df = trigger_stats.get("pre_post_df")
+            if pre_post_df is not None and not pre_post_df.empty:
+                sections.append(
+                    "<h3>Pre / Post Trigger Anomaly Comparison</h3>"
+                    + pre_post_df.to_html(index=False)
+                )
+
+            # Coincidence Table
+            coin_df = trigger_stats.get("coincidence_df")
+            if coin_df is not None and not coin_df.empty:
+                sections.append(
+                    "<h3>Trigger&ndash;Anomaly Temporal Coincidence</h3>"
+                    + coin_df.to_html(index=False)
+                )
+
+            # Band Shift Table
+            band_shift = trigger_stats.get("band_shift")
+            if band_shift is not None:
+                bands = band_shift.get("bands", [])
+                pre_p = band_shift.get("pre_powers", [])
+                post_p = band_shift.get("post_powers", [])
+                p_vals = band_shift.get("p_values", [])
+                if len(bands) > 0:
+                    bs_df = pd.DataFrame({
+                        "Band": bands,
+                        "Pre Mean Power": [f"{v:.6f}" for v in pre_p],
+                        "Post Mean Power": [f"{v:.6f}" for v in post_p],
+                        "Change %": [
+                            f"{((post - pre) / (pre + 1e-12)) * 100:.1f}"
+                            for pre, post in zip(pre_p, post_p)
+                        ],
+                        "p-value": [f"{p:.4f}" for p in p_vals],
+                    })
+                    sections.append(
+                        "<h3>Spectral Band Power Shift at Trigger</h3>"
+                        + bs_df.to_html(index=False)
+                    )
+
+        # Trigger notes
+        if trigger_info.get("explanations"):
+            notes_html = "<ul>" + "".join(
+                f"<li>{e}</li>" for e in trigger_info["explanations"]
+            ) + "</ul>"
+            sections.append(f"<h3>Trigger Notes</h3>{notes_html}")
 
     content = "\n".join(sections)
     # Use replace() — NOT format() — so Plotly's embedded JSON {}/[] are preserved

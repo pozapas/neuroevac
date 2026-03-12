@@ -62,7 +62,81 @@ from analysis.anomaly import (
     run_autoencoder, ensemble_scores, _check_torch,
     run_zscore_detector, run_spectral_ratio_detector,
     run_kurtosis_entropy_detector,
+    parse_trigger_csv, get_trigger_info,
+    compute_trigger_locked_scores, pre_post_trigger_test,
+    trigger_coincidence_test, compute_trigger_band_shift,
 )
+
+# ── Optional Trigger File Upload ───────────────────────────────────────────
+with st.expander("⚡ VR Experiment Trigger Events (optional)", expanded=False):
+    st.markdown(
+        '<p style="color: #8b949e; font-size: 0.85rem; margin-bottom: 8px;">'
+        'Upload the <strong>Trigger Time CSV</strong> from your VR evacuation experiment '
+        'to overlay trigger events on anomaly plots and run trigger–anomaly '
+        'relationship analyses.</p>',
+        unsafe_allow_html=True,
+    )
+    trigger_file = st.file_uploader(
+        "Upload Trigger Time CSV",
+        type=["csv"],
+        key="trigger_csv_upload",
+        help="CSV with columns: Participant Number, User Group, Trigger Time, ...",
+    )
+
+    trigger_info = st.session_state.get("trigger_info")
+
+    if trigger_file is not None:
+        trigger_df = parse_trigger_csv(trigger_file.getvalue())
+        st.session_state["trigger_df"] = trigger_df
+
+        participants = trigger_df["Participant Number"].dropna().tolist()
+        selected_participant = st.selectbox(
+            "Select Participant",
+            options=participants,
+            index=0,
+            help="Choose the participant whose trigger event to overlay.",
+        )
+
+        trigger_info = get_trigger_info(trigger_df, selected_participant)
+
+        if trigger_info is not None:
+            st.session_state["trigger_info"] = trigger_info
+            grp = trigger_info["group"]
+            icon = "🔊" if grp == "Auditory" else "👁️"
+            color = "#f0883e" if grp == "Auditory" else "#58a6ff"
+            t_s = trigger_info["trigger_time_s"]
+            t_min = int(t_s // 60)
+            t_sec = t_s % 60
+
+            st.markdown(
+                f'<div style="background: linear-gradient(135deg, #0d1f0d 0%, #1a2a1a 100%); '
+                f'border: 1px solid {color}; border-radius: 8px; padding: 12px 16px; '
+                f'margin-top: 8px;">'
+                f'<span style="font-size: 1.4rem;">{icon}</span> '
+                f'<strong style="color: {color}; font-size: 1rem;"> '
+                f'{selected_participant}</strong> &nbsp;—&nbsp; '
+                f'<span style="color: #c9d1d9;">{grp} trigger at '
+                f'<strong>{t_min}:{t_sec:04.1f}</strong> ({t_s:.1f}s)</span></div>',
+                unsafe_allow_html=True,
+            )
+            if trigger_info["explanations"]:
+                for note in trigger_info["explanations"]:
+                    st.caption(f"📝 {note}")
+        else:
+            st.warning(
+                f"No valid trigger time found for **{selected_participant}**. "
+                "Trigger analysis will be disabled."
+            )
+            st.session_state.pop("trigger_info", None)
+    elif trigger_info is not None:
+        # Keep previous trigger info if file was already uploaded
+        grp = trigger_info["group"]
+        icon = "🔊" if grp == "Auditory" else "👁️"
+        st.info(
+            f"{icon} Using previously loaded trigger: "
+            f"**{trigger_info['participant']}** ({grp}, "
+            f"{trigger_info['trigger_time_s']:.1f}s)"
+        )
 
 raw = st.session_state.get("raw_filtered", rec.build_mne_raw())
 
@@ -145,6 +219,17 @@ epoch_dur = st.session_state.get("anomaly_epoch_dur", 2.0)
 n_epochs = len(list(all_scores.values())[0])
 time_axis = np.arange(n_epochs) * epoch_dur
 
+# Resolve trigger info for overlays
+trigger_info = st.session_state.get("trigger_info")
+_trigger_time = trigger_info["trigger_time_s"] if trigger_info else None
+_trigger_group = trigger_info["group"] if trigger_info else None
+_trigger_color = (
+    "#f0883e" if _trigger_group == "Auditory" else "#58a6ff"
+) if _trigger_group else None
+_trigger_icon = (
+    "🔊" if _trigger_group == "Auditory" else "👁️"
+) if _trigger_group else None
+
 # Threshold slider
 threshold = st.slider(
     "Anomaly threshold (percentile)",
@@ -152,17 +237,29 @@ threshold = st.slider(
 )
 
 # ── Tabbed Results ─────────────────────────────────────────────────────────
-tab_eeg, tab_ml, tab_heatmap, tab_gallery, tab_importance = st.tabs([
+tab_list = [
     "🧠 EEG-Specific Detectors",
     "🤖 General ML Detectors",
     "🗺️ Channel × Epoch Heatmap",
     "📋 Anomalous Epoch Gallery",
-    "📊 Feature Importance",
-])
+]
+if _trigger_time is not None:
+    tab_list.append("⚡ Trigger Analysis")
+tab_list.append("📊 Feature Importance")
+
+tabs = st.tabs(tab_list)
+
+# Map tab names to tab objects for clarity
+tab_eeg = tabs[0]
+tab_ml = tabs[1]
+tab_heatmap = tabs[2]
+tab_gallery = tabs[3]
+tab_trigger = tabs[4] if _trigger_time is not None else None
+tab_importance = tabs[-1]
 
 
 def _plot_detector_group(score_dict, colors, threshold_pct):
-    """Plot a group of detector scores as subplots."""
+    """Plot a group of detector scores as subplots with optional trigger overlay."""
     names = list(score_dict.keys())
     n = len(names)
     if n == 0:
@@ -199,6 +296,27 @@ def _plot_detector_group(score_dict, colors, threshold_pct):
             line_color="rgba(255,255,255,0.3)",
             row=i + 1, col=1,
         )
+
+        # Trigger overlay
+        if _trigger_time is not None:
+            fig.add_vline(
+                x=_trigger_time, line_dash="dash",
+                line_color=_trigger_color, line_width=1.5,
+                row=i + 1, col=1,
+            )
+            # Shaded ±5s window around trigger
+            fig.add_vrect(
+                x0=_trigger_time - 5, x1=_trigger_time + 5,
+                fillcolor=_trigger_color, opacity=0.07,
+                line_width=0, row=i + 1, col=1,
+            )
+            # Annotation only on the first subplot to avoid clutter
+            if i == 0:
+                fig.add_annotation(
+                    x=_trigger_time, y=1.05, yref="paper",
+                    text=f"{_trigger_icon} Trigger ({_trigger_group})",
+                    showarrow=False, font=dict(color=_trigger_color, size=11),
+                )
 
     fig.update_layout(
         template="plotly_dark",
@@ -271,6 +389,17 @@ with tab_heatmap:
             yaxis_title="Channel",
             margin=dict(l=100, r=20, t=20, b=60),
         )
+        # Trigger overlay on heatmap
+        if _trigger_time is not None:
+            # Find the x-axis tick label closest to trigger
+            closest_idx = int(np.argmin(np.abs(time_axis - _trigger_time)))
+            fig_hm.add_vline(
+                x=closest_idx, line_dash="dash",
+                line_color=_trigger_color, line_width=2,
+                annotation_text=f"{_trigger_icon} Trigger",
+                annotation_font_color=_trigger_color,
+                annotation_font_size=11,
+            )
         st.plotly_chart(fig_hm, use_container_width=True)
     else:
         st.info("No epoch data available.")
@@ -298,10 +427,20 @@ with tab_gallery:
         t_epoch = np.arange(data.shape[2]) / rec.sfreq
 
         for rank, ep_idx in enumerate(top_idx):
+            # Check if this epoch contains or neighbours the trigger
+            ep_start = ep_idx * epoch_dur
+            ep_end = ep_start + epoch_dur
+            near_trigger = False
+            trigger_label = ""
+            if _trigger_time is not None:
+                if ep_start - 5 <= _trigger_time <= ep_end + 5:
+                    near_trigger = True
+                    trigger_label = f"  {_trigger_icon} Near trigger"
+
             with st.expander(
                 f"#{rank+1}  —  Epoch {ep_idx}  "
                 f"(t = {ep_idx * epoch_dur:.1f}s,  "
-                f"score = {ensemble_sc[ep_idx]:.3f})",
+                f"score = {ensemble_sc[ep_idx]:.3f}){trigger_label}",
                 expanded=(rank == 0),
             ):
                 fig_ep = go.Figure()
@@ -332,6 +471,396 @@ with tab_gallery:
                 st.plotly_chart(fig_ep, use_container_width=True, key=f"gallery_{ep_idx}")
     else:
         st.info("No ensemble scores available.")
+
+# ── Tab: Trigger Analysis ─────────────────────────────────────────────────
+if tab_trigger is not None:
+  with tab_trigger:
+    st.markdown(
+        """
+        <div style="background: linear-gradient(135deg, #161b22 0%, #1c2333 100%);
+                    border: 1px solid #30363d; border-radius: 10px; padding: 16px 20px;
+                    margin-bottom: 1.2rem; line-height: 1.6;">
+            <h4 style="color: #58a6ff; margin: 0 0 6px 0; font-size: 1rem;">
+                ⚡ Trigger–Anomaly Relationship Analysis
+            </h4>
+            <p style="color: #8b949e; font-size: 0.84rem; margin: 0;">
+                This section analyses whether detected anomalies are temporally
+                associated with the VR experiment trigger (auditory alarm or visual
+                cue). It includes: <strong>trigger-locked anomaly response curves</strong>,
+                <strong>pre/post statistical comparisons</strong> (Mann-Whitney U,
+                Cohen's d), <strong>permutation-based coincidence tests</strong>,
+                <strong>spectral band power shifts</strong>, and an
+                <strong>anomaly proximity distribution</strong>.
+            </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # Settings for trigger analysis
+    t_col1, t_col2, t_col3 = st.columns(3)
+    with t_col1:
+        tlar_pre = st.number_input("Pre-trigger window (s)", 5.0, 60.0, 15.0, 5.0, key="tlar_pre")
+    with t_col2:
+        tlar_post = st.number_input("Post-trigger window (s)", 5.0, 120.0, 30.0, 5.0, key="tlar_post")
+    with t_col3:
+        stat_window = st.number_input("Stats comparison window (s)", 10.0, 120.0, 30.0, 5.0, key="stat_window")
+
+    st.markdown("---")
+
+    # ── 1. Trigger-Locked Anomaly Response (TLAR) ──────────────────────
+    st.subheader("1. Trigger-Locked Anomaly Response (TLAR)")
+    st.markdown(
+        '<p style="color: #8b949e; font-size: 0.85rem;">Anomaly scores aligned '
+        'to trigger onset (time 0). Analogous to Event-Related Potential (ERP) '
+        'analysis but applied to anomaly scores instead of raw voltage.</p>',
+        unsafe_allow_html=True,
+    )
+
+    tlar = compute_trigger_locked_scores(
+        all_scores, epoch_dur, _trigger_time,
+        window_pre=tlar_pre, window_post=tlar_post,
+    )
+    tlar_time = tlar["time_axis"]
+    tlar_scores = tlar["scores"]
+
+    if len(tlar_time) > 0:
+        # Plot ensemble + individual detectors
+        fig_tlar = go.Figure()
+
+        # Individual detectors (thin, low opacity)
+        det_colors = {
+            "Z-Score Threshold": "#3fb950",
+            "Spectral Ratio": "#f0883e",
+            "Kurtosis & Entropy": "#a371f7",
+            "Isolation Forest": "#58a6ff",
+            "LOF": "#d2a8ff",
+            "OCSVM": "#79c0ff",
+            "Autoencoder": "#ffa657",
+        }
+        for name, sc in tlar_scores.items():
+            if name == "Ensemble":
+                continue
+            fig_tlar.add_trace(go.Scatter(
+                x=tlar_time, y=sc, mode="lines",
+                name=name, line=dict(
+                    color=det_colors.get(name, "#8b949e"),
+                    width=0.8, dash="dot",
+                ),
+                opacity=0.5,
+            ))
+
+        # Ensemble (bold)
+        if "Ensemble" in tlar_scores:
+            ens = tlar_scores["Ensemble"]
+            fig_tlar.add_trace(go.Scatter(
+                x=tlar_time, y=ens, mode="lines",
+                name="Ensemble", line=dict(color="#ff7b72", width=2.5),
+            ))
+
+            # Bootstrap 95% CI band (fast: resample from nearby epochs)
+            if len(ens) >= 5:
+                n_boot = 200
+                rng = np.random.default_rng(42)
+                boot_means = np.zeros((n_boot, len(ens)))
+                for b in range(n_boot):
+                    idx = rng.choice(len(ens), size=len(ens), replace=True)
+                    boot_means[b] = ens[idx]
+                ci_lo = np.percentile(boot_means, 2.5, axis=0)
+                ci_hi = np.percentile(boot_means, 97.5, axis=0)
+                fig_tlar.add_trace(go.Scatter(
+                    x=np.concatenate([tlar_time, tlar_time[::-1]]),
+                    y=np.concatenate([ci_hi, ci_lo[::-1]]),
+                    fill="toself", fillcolor="rgba(255,123,114,0.12)",
+                    line=dict(width=0), showlegend=False, name="95% CI",
+                ))
+
+        # Trigger line at time 0
+        fig_tlar.add_vline(
+            x=0, line_dash="dash", line_color=_trigger_color, line_width=2,
+            annotation_text=f"{_trigger_icon} Trigger",
+            annotation_font_color=_trigger_color,
+        )
+        fig_tlar.add_vrect(
+            x0=-5, x1=5, fillcolor=_trigger_color, opacity=0.06, line_width=0,
+        )
+
+        fig_tlar.update_layout(
+            template="plotly_dark", height=420,
+            xaxis_title="Time relative to trigger (s)",
+            yaxis_title="Anomaly score",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(l=60, r=20, t=40, b=60),
+        )
+        st.plotly_chart(fig_tlar, use_container_width=True)
+    else:
+        st.warning("Trigger falls outside the recorded epoch range.")
+
+    st.markdown("---")
+
+    # ── 2. Pre / Post Trigger Statistical Comparison ───────────────────
+    st.subheader("2. Pre / Post Trigger Statistical Comparison")
+    st.markdown(
+        '<p style="color: #8b949e; font-size: 0.85rem;">Mann-Whitney U test '
+        'compares anomaly score distributions before vs. after trigger onset. '
+        'Cohen\'s d quantifies effect size. '
+        f'Window: <strong>{stat_window:.0f}s</strong> pre and post trigger.</p>',
+        unsafe_allow_html=True,
+    )
+
+    stats_df = pre_post_trigger_test(
+        all_scores, epoch_dur, _trigger_time,
+        pre_window=stat_window, post_window=stat_window,
+    )
+
+    if not stats_df.empty:
+        # Bar chart: pre vs post mean per detector
+        fig_prepost = go.Figure()
+        fig_prepost.add_trace(go.Bar(
+            name="Pre-trigger", x=stats_df["Detector"], y=stats_df["Pre Mean"],
+            marker_color="#58a6ff", opacity=0.8,
+        ))
+        fig_prepost.add_trace(go.Bar(
+            name="Post-trigger", x=stats_df["Detector"], y=stats_df["Post Mean"],
+            marker_color="#ff7b72", opacity=0.8,
+        ))
+
+        # Add significance stars
+        for i, row in stats_df.iterrows():
+            pv = row["p-value"]
+            if isinstance(pv, str):
+                continue
+            y_pos = max(row["Pre Mean"], row["Post Mean"]) * 1.08
+            star = ""
+            if pv < 0.001:
+                star = "***"
+            elif pv < 0.01:
+                star = "**"
+            elif pv < 0.05:
+                star = "*"
+            if star:
+                fig_prepost.add_annotation(
+                    x=row["Detector"], y=y_pos, text=star,
+                    showarrow=False, font=dict(color="#ffa657", size=14),
+                )
+
+        fig_prepost.update_layout(
+            template="plotly_dark", barmode="group", height=380,
+            yaxis_title="Mean anomaly score",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            margin=dict(l=60, r=20, t=40, b=80),
+        )
+        st.plotly_chart(fig_prepost, use_container_width=True)
+
+        # Stats table
+        st.dataframe(stats_df, use_container_width=True, hide_index=True)
+
+        # Interpretation
+        sig_count = sum(
+            1 for _, r in stats_df.iterrows()
+            if isinstance(r["p-value"], (int, float)) and r["p-value"] < 0.05
+        )
+        total = len(stats_df)
+        if sig_count > 0:
+            st.success(
+                f"**{sig_count}/{total}** detectors show statistically significant "
+                f"(p < 0.05) differences in anomaly scores between pre- and post-trigger windows."
+            )
+        else:
+            st.info(
+                "No detectors show statistically significant pre/post trigger differences "
+                "at p < 0.05."
+            )
+    else:
+        st.warning("Insufficient epochs in the pre/post trigger windows for statistical testing.")
+
+    st.markdown("---")
+
+    # ── 3. Trigger–Anomaly Temporal Coincidence ────────────────────────
+    st.subheader("3. Trigger–Anomaly Temporal Coincidence")
+    st.markdown(
+        '<p style="color: #8b949e; font-size: 0.85rem;">Permutation test '
+        '(n=1000) assessing whether flagged anomalies cluster near the trigger '
+        'more than expected by chance. Fold enrichment &gt; 1 indicates '
+        'spatial clustering; p-value indicates statistical significance.</p>',
+        unsafe_allow_html=True,
+    )
+
+    coin_df = trigger_coincidence_test(
+        all_scores, epoch_dur, _trigger_time,
+        threshold_pct=float(threshold),
+        windows=[5.0, 10.0, 15.0],
+    )
+
+    if not coin_df.empty:
+        st.dataframe(coin_df, use_container_width=True, hide_index=True)
+
+        # Highlight significant coincidences
+        sig_coins = coin_df[coin_df["p-value (perm)"] < 0.05]
+        if not sig_coins.empty:
+            st.success(
+                f"**{len(sig_coins)}** detector–window combinations show "
+                "statistically significant clustering of anomalies near the trigger "
+                "(permutation p < 0.05)."
+            )
+        else:
+            st.info("No significant trigger–anomaly clustering detected at p < 0.05.")
+    else:
+        st.warning("No flagged anomalies to test for coincidence.")
+
+    st.markdown("---")
+
+    # ── 4. Spectral Band Power Shift ───────────────────────────────────
+    st.subheader("4. Spectral Band Power Shift at Trigger")
+    st.markdown(
+        '<p style="color: #8b949e; font-size: 0.85rem;">Comparison of EEG '
+        'frequency band powers before vs. after trigger. In VR evacuation '
+        'paradigms, expect <strong>Alpha suppression</strong> (increased '
+        'alertness), <strong>Beta increase</strong> (cognitive load), and '
+        'potential <strong>Theta changes</strong> (stress/anxiety response). '
+        'Mann-Whitney U test per band.</p>',
+        unsafe_allow_html=True,
+    )
+
+    epochs_obj = st.session_state.get("anomaly_epochs_obj")
+    if epochs_obj is not None:
+        band_shift = compute_trigger_band_shift(
+            epochs_obj, epoch_dur, _trigger_time,
+            pre_window=stat_window, post_window=stat_window,
+        )
+
+        if band_shift["pre_epoch_powers"].shape[0] > 0 and band_shift["post_epoch_powers"].shape[0] > 0:
+            band_labels = [b.split(" (")[0] for b in band_shift["bands"]]
+
+            fig_bands = go.Figure()
+            fig_bands.add_trace(go.Bar(
+                name="Pre-trigger", x=band_labels, y=band_shift["pre_powers"],
+                marker_color="#58a6ff", opacity=0.8,
+            ))
+            fig_bands.add_trace(go.Bar(
+                name="Post-trigger", x=band_labels, y=band_shift["post_powers"],
+                marker_color="#ff7b72", opacity=0.8,
+            ))
+
+            # Significance stars
+            for i, (bp, pv) in enumerate(zip(band_labels, band_shift["p_values"])):
+                y_pos = max(band_shift["pre_powers"][i], band_shift["post_powers"][i]) * 1.1
+                star = ""
+                if pv < 0.001:
+                    star = "***"
+                elif pv < 0.01:
+                    star = "**"
+                elif pv < 0.05:
+                    star = "*"
+                if star:
+                    fig_bands.add_annotation(
+                        x=bp, y=y_pos, text=star,
+                        showarrow=False, font=dict(color="#ffa657", size=14),
+                    )
+
+            fig_bands.update_layout(
+                template="plotly_dark", barmode="group", height=380,
+                yaxis_title="Mean band power (µV²/Hz)",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                margin=dict(l=60, r=20, t=40, b=60),
+            )
+            st.plotly_chart(fig_bands, use_container_width=True)
+
+            # Table of p-values
+            band_table = pd.DataFrame({
+                "Band": band_shift["bands"],
+                "Pre Mean Power": [f"{v:.6f}" for v in band_shift["pre_powers"]],
+                "Post Mean Power": [f"{v:.6f}" for v in band_shift["post_powers"]],
+                "Change %": [
+                    f"{((post - pre) / (pre + 1e-12)) * 100:.1f}"
+                    for pre, post in zip(band_shift["pre_powers"], band_shift["post_powers"])
+                ],
+                "p-value": [f"{p:.4f}" for p in band_shift["p_values"]],
+            })
+            st.dataframe(band_table, use_container_width=True, hide_index=True)
+        else:
+            st.warning("Insufficient epochs in the pre/post trigger windows for spectral analysis.")
+    else:
+        st.warning("No epoch data available for spectral analysis.")
+
+    st.markdown("---")
+
+    # ── 5. Anomaly Proximity Distribution ──────────────────────────────
+    st.subheader("5. Anomaly Proximity Distribution")
+    st.markdown(
+        '<p style="color: #8b949e; font-size: 0.85rem;">Distribution of '
+        'temporal distances from flagged anomaly epochs to the trigger event. '
+        'A concentration near zero indicates anomalies cluster around the trigger. '
+        'Kolmogorov-Smirnov test compares against a uniform baseline.</p>',
+        unsafe_allow_html=True,
+    )
+
+    ensemble_sc_trig = all_scores.get("Ensemble", np.array([]))
+    if len(ensemble_sc_trig) > 0:
+        thresh_val_trig = np.percentile(ensemble_sc_trig, threshold)
+        flagged_mask = ensemble_sc_trig > thresh_val_trig
+        flagged_times = time_axis[flagged_mask]
+
+        if len(flagged_times) > 2:
+            distances = flagged_times - _trigger_time
+
+            fig_prox = go.Figure()
+            fig_prox.add_trace(go.Histogram(
+                x=distances, nbinsx=30, name="Anomaly distances",
+                marker_color="#ff7b72", opacity=0.7,
+            ))
+
+            # KDE overlay
+            from scipy.stats import gaussian_kde, kstest
+            try:
+                kde = gaussian_kde(distances)
+                x_kde = np.linspace(distances.min(), distances.max(), 200)
+                y_kde = kde(x_kde) * len(distances) * (distances.max() - distances.min()) / 30
+                fig_prox.add_trace(go.Scatter(
+                    x=x_kde, y=y_kde, mode="lines", name="KDE",
+                    line=dict(color="#ffa657", width=2),
+                ))
+            except Exception:
+                pass
+
+            # Trigger at 0
+            fig_prox.add_vline(
+                x=0, line_dash="dash", line_color=_trigger_color, line_width=2,
+                annotation_text=f"{_trigger_icon} Trigger",
+                annotation_font_color=_trigger_color,
+            )
+
+            fig_prox.update_layout(
+                template="plotly_dark", height=350,
+                xaxis_title="Time relative to trigger (s)",
+                yaxis_title="Count",
+                margin=dict(l=60, r=20, t=30, b=60),
+            )
+            st.plotly_chart(fig_prox, use_container_width=True)
+
+            # KS test: flagged distances vs. uniform over recording duration
+            from scipy.stats import kstest as ks_test
+            total_dur = time_axis[-1] + epoch_dur
+            normed_distances = (flagged_times) / total_dur
+            ks_stat, ks_p = ks_test(normed_distances, "uniform")
+
+            ks_col1, ks_col2 = st.columns(2)
+            ks_col1.metric("KS statistic", f"{ks_stat:.4f}")
+            ks_col2.metric("KS p-value", f"{ks_p:.4f}")
+
+            if ks_p < 0.05:
+                st.success(
+                    "The distribution of anomaly positions is **significantly non-uniform** "
+                    f"(KS p = {ks_p:.4f}), suggesting anomalies are not randomly distributed "
+                    "across the recording."
+                )
+            else:
+                st.info(
+                    "The distribution of anomaly positions is **not significantly different** "
+                    "from uniform (randomly distributed)."
+                )
+        else:
+            st.info("Too few flagged anomalies to compute a proximity distribution.")
 
 # ── Tab: Feature Importance ───────────────────────────────────────────────
 with tab_importance:
@@ -390,14 +919,39 @@ if len(ensemble_sc) > 0:
     thresh_val = np.percentile(ensemble_sc, threshold)
     n_flagged = int(np.sum(ensemble_sc > thresh_val))
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Total Epochs", n_epochs)
-    col2.metric("Flagged Epochs", n_flagged)
-    col3.metric("Anomaly Rate", f"{n_flagged / n_epochs * 100:.1f}%")
-    col4.metric("Detectors Used", len(all_scores) - 1)
+    # Metrics row — extend if trigger is available
+    if _trigger_time is not None:
+        col1, col2, col3, col4, col5 = st.columns(5)
+        col1.metric("Total Epochs", n_epochs)
+        col2.metric("Flagged Epochs", n_flagged)
+        col3.metric("Anomaly Rate", f"{n_flagged / n_epochs * 100:.1f}%")
+        col4.metric("Detectors Used", len(all_scores) - 1)
+        col5.metric(
+            f"{_trigger_icon} Trigger",
+            f"{_trigger_time:.1f}s",
+            delta=_trigger_group,
+            delta_color="off",
+        )
+    else:
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Epochs", n_epochs)
+        col2.metric("Flagged Epochs", n_flagged)
+        col3.metric("Anomaly Rate", f"{n_flagged / n_epochs * 100:.1f}%")
+        col4.metric("Detectors Used", len(all_scores) - 1)
 
     # Per-detector comparison table
     st.subheader("Per-Detector Breakdown")
+
+    # Pre-compute coincidence counts if trigger loaded
+    _near_trigger_counts = {}
+    if _trigger_time is not None:
+        near_mask = (time_axis >= _trigger_time - 10) & (time_axis <= _trigger_time + 10)
+        for name, sc in all_scores.items():
+            if sc is None or len(sc) == 0 or name == "Ensemble":
+                continue
+            tv = np.percentile(sc, threshold)
+            _near_trigger_counts[name] = int(np.sum((sc > tv) & near_mask))
+
     rows = []
     for name, sc in all_scores.items():
         if sc is None or len(sc) == 0 or name == "Ensemble":
@@ -405,12 +959,15 @@ if len(ensemble_sc) > 0:
         tv = np.percentile(sc, threshold)
         nf = int(np.sum(sc > tv))
         category = "EEG-Specific" if name in eeg_scores else "General ML"
-        rows.append({
+        row_data = {
             "Detector": name,
             "Category": category,
             "Flagged Epochs": nf,
             "Flagged %": f"{nf / n_epochs * 100:.1f}%",
             "Mean Score": f"{np.mean(sc):.4f}",
             "Max Score": f"{np.max(sc):.4f}",
-        })
+        }
+        if _trigger_time is not None:
+            row_data["Near Trigger (±10s)"] = _near_trigger_counts.get(name, 0)
+        rows.append(row_data)
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)

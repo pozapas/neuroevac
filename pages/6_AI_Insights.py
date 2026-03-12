@@ -151,6 +151,45 @@ if st.button("Generate Analysis Report", type="primary"):
         if "Ensemble" in scores_dict:
             anomaly_scores = scores_dict["Ensemble"]
 
+        # Trigger context
+        trigger_info = st.session_state.get("trigger_info")
+        trigger_stats = None
+        if trigger_info is not None and scores_dict:
+            from analysis.anomaly import (
+                pre_post_trigger_test,
+                trigger_coincidence_test,
+                compute_trigger_band_shift,
+            )
+            epoch_dur = st.session_state.get("anomaly_epoch_dur", 2.0)
+            t_time = trigger_info["trigger_time_s"]
+            trigger_stats = {}
+
+            try:
+                trigger_stats["pre_post_df"] = pre_post_trigger_test(
+                    scores_dict, epoch_dur, t_time,
+                    pre_window=30.0, post_window=30.0,
+                )
+            except Exception:
+                pass
+
+            try:
+                trigger_stats["coincidence_df"] = trigger_coincidence_test(
+                    scores_dict, epoch_dur, t_time,
+                    threshold_pct=95.0, windows=[5.0, 10.0, 15.0],
+                )
+            except Exception:
+                pass
+
+            epochs_obj = st.session_state.get("anomaly_epochs_obj")
+            if epochs_obj is not None:
+                try:
+                    trigger_stats["band_shift"] = compute_trigger_band_shift(
+                        epochs_obj, epoch_dur, t_time,
+                        pre_window=30.0, post_window=30.0,
+                    )
+                except Exception:
+                    pass
+
         # 2. Call Generator
         if provider == "Template (Offline)":
             summary = generate_summary(
@@ -159,6 +198,8 @@ if st.button("Generate Analysis Report", type="primary"):
                 band_powers=bp,
                 anomaly_scores=anomaly_scores,
                 survey_responses=survey_responses,
+                trigger_info=trigger_info,
+                trigger_stats=trigger_stats,
             )
         else:
             from analysis.ai_insights import generate_llm_summary
@@ -172,6 +213,8 @@ if st.button("Generate Analysis Report", type="primary"):
                 band_powers=bp,
                 anomaly_scores=anomaly_scores,
                 survey_responses=survey_responses,
+                trigger_info=trigger_info,
+                trigger_stats=trigger_stats,
             )
 
         st.session_state["ai_summary_text"] = summary

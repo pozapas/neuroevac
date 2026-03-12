@@ -54,10 +54,20 @@ def generate_summary(
     band_powers: pd.DataFrame | None = None,
     anomaly_scores: np.ndarray | None = None,
     survey_responses: dict | None = None,
+    trigger_info: dict | None = None,
+    trigger_stats: dict | None = None,
 ) -> str:
     """Generate a natural-language summary of the EEG recording analysis.
 
     This is template-driven (no external LLM needed).
+
+    Parameters
+    ----------
+    trigger_info : dict, optional
+        Keys: participant, group, trigger_time_s, explanations
+    trigger_stats : dict, optional
+        Keys: pre_post_df (DataFrame), coincidence_df (DataFrame),
+        band_shift (dict with bands/pre_powers/post_powers/p_values)
     """
     lines = []
 
@@ -128,6 +138,104 @@ def generate_summary(
             level = "low" if avg_calm <= -1 else ("moderate" if avg_calm <= 0 else "high")
             lines.append(f"- Self-reported calmness: **{level}** (avg score: {avg_calm:.1f}/2)")
 
+    # Trigger analysis
+    if trigger_info is not None:
+        t_s = trigger_info["trigger_time_s"]
+        grp = trigger_info["group"]
+        icon = "🔊" if grp == "Auditory" else "👁️"
+        t_min = int(t_s // 60)
+        t_sec = t_s % 60
+        lines.append(
+            f"\n**Trigger Event:** {icon} A **{grp}** trigger was administered at "
+            f"**{t_min}:{t_sec:04.1f}** ({t_s:.1f}s) for participant "
+            f"**{trigger_info['participant']}**."
+        )
+
+        if trigger_stats:
+            # Pre/post comparison
+            pre_post_df = trigger_stats.get("pre_post_df")
+            if pre_post_df is not None and not pre_post_df.empty:
+                sig = pre_post_df[
+                    pre_post_df["p-value"].apply(
+                        lambda x: isinstance(x, (int, float)) and x < 0.05
+                    )
+                ]
+                total = len(pre_post_df)
+                lines.append(
+                    f"\n**Trigger–Anomaly Relationship:** {len(sig)}/{total} "
+                    f"detectors show statistically significant (p < 0.05) "
+                    f"changes in anomaly scores after the trigger."
+                )
+                for _, r in sig.iterrows():
+                    direction = "increased" if r["Change %"] > 0 else "decreased"
+                    lines.append(
+                        f"- {r['Detector']}: scores {direction} by "
+                        f"{abs(r['Change %']):.1f}% (p = {r['p-value']:.4f}, "
+                        f"Cohen's d = {r['Cohen d']:.2f})"
+                    )
+
+            # Coincidence test
+            coin_df = trigger_stats.get("coincidence_df")
+            if coin_df is not None and not coin_df.empty:
+                sig_coins = coin_df[coin_df["p-value (perm)"] < 0.05]
+                if not sig_coins.empty:
+                    lines.append(
+                        f"\n**Temporal Coincidence:** {len(sig_coins)} "
+                        f"detector–window combinations show anomalies clustering "
+                        f"near the trigger beyond chance levels (permutation p < 0.05)."
+                    )
+
+            # Band shift
+            band_shift = trigger_stats.get("band_shift")
+            if band_shift is not None:
+                bands = band_shift.get("bands", [])
+                pre_p = band_shift.get("pre_powers", [])
+                post_p = band_shift.get("post_powers", [])
+                p_vals = band_shift.get("p_values", [])
+                sig_bands = [
+                    (b, pre, post, p)
+                    for b, pre, post, p in zip(bands, pre_p, post_p, p_vals)
+                    if p < 0.05
+                ]
+                if sig_bands:
+                    lines.append("\n**Spectral Shift at Trigger:**")
+                    for b, pre, post, p in sig_bands:
+                        change = ((post - pre) / (pre + 1e-12)) * 100
+                        direction = "increase" if change > 0 else "decrease"
+                        short_name = b.split(" (")[0]
+                        lines.append(
+                            f"- **{short_name}**: {abs(change):.1f}% {direction} "
+                            f"post-trigger (p = {p:.4f})"
+                        )
+                    # VR-specific interpretation
+                    band_names_lower = [b.lower() for b, _, _, _ in sig_bands]
+                    notes = []
+                    for b, pre, post, p in sig_bands:
+                        bl = b.lower()
+                        change_pct = ((post - pre) / (pre + 1e-12)) * 100
+                        if "alpha" in bl and change_pct < 0:
+                            notes.append(
+                                "Alpha suppression suggests **increased alertness/arousal** "
+                                "consistent with the VR evacuation stimulus."
+                            )
+                        if "beta" in bl and change_pct > 0:
+                            notes.append(
+                                "Beta increase indicates **elevated cognitive load** "
+                                "or active processing of the emergency cue."
+                            )
+                        if "theta" in bl and change_pct > 0:
+                            notes.append(
+                                "Theta elevation may reflect **increased "
+                                "anxiety/stress response** to the trigger."
+                            )
+                    for n in notes:
+                        lines.append(f"- {n}")
+
+        if trigger_info.get("explanations"):
+            lines.append("\n*Trigger notes:*")
+            for e in trigger_info["explanations"]:
+                lines.append(f"- {e}")
+
     return "\n".join(lines)
 
 
@@ -140,6 +248,8 @@ def generate_llm_summary(
     band_powers: pd.DataFrame | None = None,
     anomaly_scores: np.ndarray | None = None,
     survey_responses: dict | None = None,
+    trigger_info: dict | None = None,
+    trigger_stats: dict | None = None,
 ) -> str:
     """Generate an AI summary using an LLM (Ollama or OpenRouter)."""
 
@@ -171,11 +281,73 @@ def generate_llm_summary(
         for k, v in survey_responses.items():
             context.append(f"- {k}: {v}")
 
+    # Trigger context for LLM
+    if trigger_info is not None:
+        t_s = trigger_info["trigger_time_s"]
+        grp = trigger_info["group"]
+        context.append(
+            f"\nVR Experiment Trigger: {grp} stimulus administered at {t_s:.1f}s "
+            f"for {trigger_info['participant']}."
+        )
+        if trigger_info.get("explanations"):
+            for e in trigger_info["explanations"]:
+                context.append(f"  Note: {e}")
+
+    if trigger_stats:
+        pre_post_df = trigger_stats.get("pre_post_df")
+        if pre_post_df is not None and not pre_post_df.empty:
+            context.append("\nTrigger–Anomaly Pre/Post Comparison:")
+            for _, r in pre_post_df.iterrows():
+                pv = r['p-value']
+                pv_str = f"{pv:.4f}" if isinstance(pv, (int, float)) else str(pv)
+                context.append(
+                    f"- {r['Detector']}: pre={r['Pre Mean']:.5f}, "
+                    f"post={r['Post Mean']:.5f}, change={r['Change %']:.1f}%, "
+                    f"p={pv_str}, Cohen_d={r['Cohen d']:.3f}"
+                )
+
+        coin_df = trigger_stats.get("coincidence_df")
+        if coin_df is not None and not coin_df.empty:
+            context.append("\nTrigger–Anomaly Temporal Coincidence (permutation test):")
+            for _, r in coin_df.iterrows():
+                context.append(
+                    f"- {r['Detector']} ±{r['Window (±s)']:.0f}s: "
+                    f"observed={r['Observed']}, expected={r['Expected']:.2f}, "
+                    f"fold={r['Fold Enrichment']:.2f}, p={r['p-value (perm)']:.4f}"
+                )
+
+        band_shift = trigger_stats.get("band_shift")
+        if band_shift is not None:
+            context.append("\nSpectral Band Power Shift at Trigger:")
+            for b, pre, post, p in zip(
+                band_shift.get("bands", []),
+                band_shift.get("pre_powers", []),
+                band_shift.get("post_powers", []),
+                band_shift.get("p_values", []),
+            ):
+                change = ((post - pre) / (pre + 1e-12)) * 100
+                context.append(
+                    f"- {b}: pre={pre:.6f}, post={post:.6f}, "
+                    f"change={change:.1f}%, p={p:.4f}"
+                )
+
+    trigger_clause = ""
+    if trigger_info is not None:
+        trigger_clause = (
+            " This is a VR evacuation experiment with a trigger event "
+            f"({trigger_info['group']} stimulus). Analyze the trigger–anomaly "
+            "relationship: are the detected anomalies related to the trigger? "
+            "Discuss pre/post spectral shifts in the context of neuroscience "
+            "(Alpha suppression = arousal, Beta increase = cognitive load, "
+            "Theta changes = stress). "
+        )
+
     prompt = (
         "You are an expert neuroscientist and data analyst. "
         "Analyze the following EEG session summary data and provide a concise, "
         "professional report. Highlight the spectral composition, potential artifacts "
         "(suggested by anomalies), and any psychological context from the survey. "
+        + trigger_clause +
         "Do not hallucinate data not present here.\n\n"
         "DATA:\n" + "\n".join(context)
     )

@@ -1,11 +1,14 @@
 """
-anomaly.py — ML/DL anomaly detection on EEG epoch features.
+anomaly.py — ML/DL anomaly detection on EEG epoch features,
+plus trigger-aware analysis for VR experiment paradigms.
 """
 
 from __future__ import annotations
 
+import re
 import numpy as np
 import pandas as pd
+from scipy import stats as sp_stats
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from sklearn.svm import OneClassSVM
@@ -225,3 +228,313 @@ def ensemble_scores(score_dict: dict[str, np.ndarray]) -> np.ndarray:
 
     stacked = np.stack(list(normalized.values()), axis=0)
     return np.mean(stacked, axis=0)
+
+
+# ---------------------------------------------------------------------------
+# Trigger CSV parsing
+# ---------------------------------------------------------------------------
+
+def parse_trigger_csv(file_content: bytes | str) -> pd.DataFrame:
+    """Parse a Trigger Time CSV and convert trigger times to seconds.
+
+    Handles the ``MM:SS.S`` format used in the experiment.
+    Returns a DataFrame with an added ``trigger_time_s`` column (float, NaN
+    if unparseable or missing).
+    """
+    from io import BytesIO, StringIO
+
+    if isinstance(file_content, bytes):
+        df = pd.read_csv(BytesIO(file_content))
+    else:
+        df = pd.read_csv(StringIO(file_content))
+
+    # Normalise column names (strip whitespace)
+    df.columns = [c.strip() for c in df.columns]
+
+    def _parse_time(val) -> float:
+        """Convert 'MM:SS.S' or 'MM:SS' to seconds. Returns NaN on failure."""
+        if pd.isna(val) or str(val).strip() == "":
+            return np.nan
+        s = str(val).strip()
+        m = re.match(r"^(\d+):(\d+(?:\.\d+)?)$", s)
+        if m:
+            return int(m.group(1)) * 60 + float(m.group(2))
+        # Try plain float (seconds already)
+        try:
+            return float(s)
+        except ValueError:
+            return np.nan
+
+    df["trigger_time_s"] = df["Trigger Time"].apply(_parse_time)
+    return df
+
+
+def get_trigger_info(trigger_df: pd.DataFrame, participant: str) -> dict | None:
+    """Return a dict with trigger details for a given participant, or None."""
+    row = trigger_df[trigger_df["Participant Number"].str.strip() == participant.strip()]
+    if row.empty:
+        return None
+    row = row.iloc[0]
+    t = row.get("trigger_time_s", np.nan)
+    if pd.isna(t):
+        return None
+    info: dict = {
+        "participant": participant,
+        "group": str(row.get("User Group", "Unknown")).strip(),
+        "trigger_time_s": float(t),
+        "explanations": [],
+    }
+    for col in ["Explanation1", "Explanation2"]:
+        v = row.get(col)
+        if pd.notna(v) and str(v).strip():
+            info["explanations"].append(str(v).strip())
+    return info
+
+
+# ---------------------------------------------------------------------------
+# Trigger-Locked Anomaly Response (TLAR)
+# ---------------------------------------------------------------------------
+
+def compute_trigger_locked_scores(
+    score_dict: dict[str, np.ndarray],
+    epoch_dur: float,
+    trigger_time_s: float,
+    window_pre: float = 15.0,
+    window_post: float = 30.0,
+) -> dict:
+    """Compute anomaly scores aligned to trigger onset (time 0).
+
+    Returns dict with:
+      - ``time_axis``: array of epoch-centre times relative to trigger
+      - ``scores``: dict of detector name → score values within window
+      - ``epoch_indices``: the original epoch indices that fall in the window
+    """
+    n_epochs = len(list(score_dict.values())[0])
+    # Epoch centre times (absolute)
+    epoch_centres = np.arange(n_epochs) * epoch_dur + epoch_dur / 2.0
+    # Relative to trigger
+    rel_times = epoch_centres - trigger_time_s
+
+    mask = (rel_times >= -window_pre) & (rel_times <= window_post)
+    indices = np.where(mask)[0]
+
+    result_scores: dict[str, np.ndarray] = {}
+    for name, sc in score_dict.items():
+        if sc is not None and len(sc) == n_epochs:
+            result_scores[name] = sc[mask]
+
+    return {
+        "time_axis": rel_times[mask],
+        "scores": result_scores,
+        "epoch_indices": indices,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Pre / Post Trigger Statistical Comparison
+# ---------------------------------------------------------------------------
+
+def pre_post_trigger_test(
+    score_dict: dict[str, np.ndarray],
+    epoch_dur: float,
+    trigger_time_s: float,
+    pre_window: float = 30.0,
+    post_window: float = 30.0,
+) -> pd.DataFrame:
+    """Compare per-detector anomaly scores before vs after trigger.
+
+    Returns a DataFrame with columns:
+      Detector, Pre Mean, Post Mean, Change %, Wilcoxon W, p-value, Cohen d
+    """
+    n_epochs = len(list(score_dict.values())[0])
+    epoch_starts = np.arange(n_epochs) * epoch_dur
+
+    pre_mask = (epoch_starts >= trigger_time_s - pre_window) & (epoch_starts < trigger_time_s)
+    post_mask = (epoch_starts >= trigger_time_s) & (epoch_starts < trigger_time_s + post_window)
+
+    rows = []
+    for name, sc in score_dict.items():
+        if sc is None or len(sc) == 0 or name == "Ensemble":
+            continue
+        pre_vals = sc[pre_mask]
+        post_vals = sc[post_mask]
+
+        if len(pre_vals) < 3 or len(post_vals) < 3:
+            continue
+
+        pre_mean = float(np.mean(pre_vals))
+        post_mean = float(np.mean(post_vals))
+        change_pct = ((post_mean - pre_mean) / (pre_mean + 1e-12)) * 100
+
+        # Wilcoxon rank-sum (independent samples)
+        try:
+            stat, pval = sp_stats.mannwhitneyu(
+                pre_vals, post_vals, alternative="two-sided"
+            )
+        except ValueError:
+            stat, pval = np.nan, np.nan
+
+        # Cohen's d (unequal sample sizes)
+        pooled_std = np.sqrt(
+            ((len(pre_vals) - 1) * np.var(pre_vals, ddof=1)
+             + (len(post_vals) - 1) * np.var(post_vals, ddof=1))
+            / (len(pre_vals) + len(post_vals) - 2 + 1e-12)
+        )
+        cohens_d = (post_mean - pre_mean) / (pooled_std + 1e-12)
+
+        rows.append({
+            "Detector": name,
+            "Pre Mean": round(pre_mean, 5),
+            "Post Mean": round(post_mean, 5),
+            "Change %": round(change_pct, 1),
+            "Mann-Whitney U": round(float(stat), 2) if not np.isnan(stat) else "N/A",
+            "p-value": round(float(pval), 4) if not np.isnan(pval) else "N/A",
+            "Cohen d": round(float(cohens_d), 3),
+        })
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Trigger–Anomaly Temporal Coincidence (permutation test)
+# ---------------------------------------------------------------------------
+
+def trigger_coincidence_test(
+    score_dict: dict[str, np.ndarray],
+    epoch_dur: float,
+    trigger_time_s: float,
+    threshold_pct: float = 95.0,
+    windows: list[float] | None = None,
+    n_permutations: int = 1000,
+    rng_seed: int = 42,
+) -> pd.DataFrame:
+    """Test whether flagged anomalies cluster near the trigger.
+
+    For each detector and each window size, count flagged epochs within
+    ±window of the trigger and compare to expected count via permutation.
+    Returns a DataFrame with: Detector, Window, Observed, Expected, Fold, p-value.
+    """
+    if windows is None:
+        windows = [5.0, 10.0, 15.0]
+
+    rng = np.random.default_rng(rng_seed)
+    n_epochs = len(list(score_dict.values())[0])
+    epoch_starts = np.arange(n_epochs) * epoch_dur
+
+    rows = []
+    for name, sc in score_dict.items():
+        if sc is None or len(sc) == 0 or name == "Ensemble":
+            continue
+        thresh_val = np.percentile(sc, threshold_pct)
+        is_anomaly = sc > thresh_val
+        n_flagged = int(np.sum(is_anomaly))
+        if n_flagged == 0:
+            continue
+
+        for win in windows:
+            near_mask = (epoch_starts >= trigger_time_s - win) & (
+                epoch_starts <= trigger_time_s + win
+            )
+            observed = int(np.sum(is_anomaly & near_mask))
+            n_near = int(np.sum(near_mask))
+
+            # Expected under uniform distribution of anomalies
+            expected = n_flagged * (n_near / n_epochs) if n_epochs > 0 else 0
+
+            # Permutation p-value
+            perm_counts = np.zeros(n_permutations)
+            for p in range(n_permutations):
+                perm_labels = rng.permutation(is_anomaly)
+                perm_counts[p] = np.sum(perm_labels & near_mask)
+            p_val = float(np.mean(perm_counts >= observed))
+
+            fold = observed / (expected + 1e-12)
+
+            rows.append({
+                "Detector": name,
+                "Window (±s)": win,
+                "Observed": observed,
+                "Expected": round(expected, 2),
+                "Fold Enrichment": round(fold, 2),
+                "p-value (perm)": round(p_val, 4),
+            })
+
+    return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Spectral Band Power Shift at Trigger
+# ---------------------------------------------------------------------------
+
+def compute_trigger_band_shift(
+    epochs_obj,
+    epoch_dur: float,
+    trigger_time_s: float,
+    pre_window: float = 30.0,
+    post_window: float = 30.0,
+) -> dict:
+    """Compare band powers pre vs post trigger.
+
+    Returns dict with:
+      - ``bands``: list of band names
+      - ``pre_powers``: (n_bands,) mean power before trigger
+      - ``post_powers``: (n_bands,) mean power after trigger
+      - ``p_values``: (n_bands,) paired t-test p-values
+      - ``pre_epoch_powers``: (n_pre_epochs, n_bands) for individual data
+      - ``post_epoch_powers``: (n_post_epochs, n_bands) for individual data
+    """
+    from scipy.signal import welch as sp_welch
+    from utils.signal_processing import get_safe_bands
+
+    data = epochs_obj.get_data()  # (n_epochs, n_channels, n_times)
+    sfreq = epochs_obj.info["sfreq"]
+    n_epochs_total = data.shape[0]
+
+    epoch_starts = np.arange(n_epochs_total) * epoch_dur
+    pre_mask = (epoch_starts >= trigger_time_s - pre_window) & (epoch_starts < trigger_time_s)
+    post_mask = (epoch_starts >= trigger_time_s) & (epoch_starts < trigger_time_s + post_window)
+
+    safe_bands = get_safe_bands(sfreq)
+    band_names = list(safe_bands.keys())
+
+    def _band_powers_for_epochs(mask):
+        idx = np.where(mask)[0]
+        if len(idx) == 0:
+            return np.zeros((0, len(band_names)))
+        powers = np.zeros((len(idx), len(band_names)))
+        for ei, ep_idx in enumerate(idx):
+            # Average PSD across channels
+            all_pxx = []
+            for ch in range(data.shape[1]):
+                freqs, pxx = sp_welch(data[ep_idx, ch], fs=sfreq,
+                                      nperseg=min(data.shape[2], 256))
+                all_pxx.append(pxx)
+            avg_pxx = np.mean(all_pxx, axis=0)
+            for bi, (_, (fmin, fmax)) in enumerate(safe_bands.items()):
+                band_idx = (freqs >= fmin) & (freqs <= fmax)
+                powers[ei, bi] = np.mean(avg_pxx[band_idx]) if np.any(band_idx) else 0.0
+        return powers
+
+    pre_powers = _band_powers_for_epochs(pre_mask)
+    post_powers = _band_powers_for_epochs(post_mask)
+
+    # Mean across epochs
+    pre_mean = np.mean(pre_powers, axis=0) if pre_powers.shape[0] > 0 else np.zeros(len(band_names))
+    post_mean = np.mean(post_powers, axis=0) if post_powers.shape[0] > 0 else np.zeros(len(band_names))
+
+    # Paired t-test per band (use independent t-test since sample sizes may differ)
+    p_values = np.ones(len(band_names))
+    for bi in range(len(band_names)):
+        if pre_powers.shape[0] >= 2 and post_powers.shape[0] >= 2:
+            _, p_values[bi] = sp_stats.mannwhitneyu(
+                pre_powers[:, bi], post_powers[:, bi], alternative="two-sided"
+            )
+
+    return {
+        "bands": band_names,
+        "pre_powers": pre_mean,
+        "post_powers": post_mean,
+        "p_values": p_values,
+        "pre_epoch_powers": pre_powers,
+        "post_epoch_powers": post_powers,
+    }
