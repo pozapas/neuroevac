@@ -227,7 +227,7 @@ with st.expander("🎥 VR Screen Recording Analysis (optional)", expanded=False)
                 video_filename = video_file.name
             elif video_path.strip():
                 import os
-                p = video_path.strip()
+                p = video_path.strip().strip('"').strip("'")
                 if os.path.isfile(p):
                     with open(p, "rb") as f:
                         video_bytes = f.read()
