@@ -25,6 +25,15 @@ from analysis.ai_insights import cluster_epochs, generate_summary
 # ── Clustering ─────────────────────────────────────────────────────────────
 st.header("Unsupervised Pattern Discovery")
 
+raw_filtered = st.session_state.get("raw_filtered")
+
+if raw_filtered is not None:
+    raw = raw_filtered
+    st.success("✨ Currently using **post-filtered** signals (from Preprocessing page).")
+else:
+    raw = rec.build_mne_raw()
+    st.warning("⚠️ Currently using **raw** EEG signals. Insights may be skewed by artifacts.")
+
 features = st.session_state.get("anomaly_features")
 if features is None:
     st.info(
@@ -33,7 +42,6 @@ if features is None:
     )
     if st.button("Extract Features"):
         from utils.signal_processing import make_fixed_epochs, extract_epoch_features
-        raw = st.session_state.get("raw_filtered", rec.build_mne_raw())
         with st.spinner("Extracting features..."):
             epochs = make_fixed_epochs(raw, duration=2.0)
             features = extract_epoch_features(epochs)

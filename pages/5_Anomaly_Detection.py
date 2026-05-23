@@ -302,7 +302,15 @@ if st.session_state.get("video_events"):
     with st.expander("🔧 Raw Gemini Response", expanded=False):
         st.code(st.session_state.get("video_raw_response", ""), language="json")
 
-raw = st.session_state.get("raw_filtered", rec.build_mne_raw())
+# ── Data Selection ────────────────────────────────────────────────────────
+raw_filtered = st.session_state.get("raw_filtered")
+
+if raw_filtered is not None:
+    raw = raw_filtered
+    st.success("✨ Currently using **post-filtered** signals (from Preprocessing page).")
+else:
+    raw = rec.build_mne_raw()
+    st.warning("⚠️ Currently using **raw** EEG signals. It is highly recommended to apply filters on the [Preprocessing](./Preprocessing) page first.")
 
 # ── EEG ↔ VR Video Time Synchronisation ───────────────────────────────────
 if st.session_state.get("video_events"):
